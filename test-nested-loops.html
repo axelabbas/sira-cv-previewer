@@ -1,24 +1,27 @@
 <!DOCTYPE html>
 <html>
+
 <head>
-  <title>Test Nested Loops</title>
+    <title>Test Nested Loops</title>
 </head>
+
 <body>
-  <h1>Experience</h1>
-  
-  {% for section in experienceSections %}
-  <section>
-    <h2>{{ section.sectionName }}</h2>
-    {% for entry in section.entries %}
-    <div class="experience-item">
-      <div class="experience-header">
-        <span class="company">{{ entry.company }}</span> - <span class="job-title">{{ entry.jobtitle }}</span>
-      </div>
-      <div class="experience-date">{{ entry.startDate }} - {{ entry.endDate }}</div>
-      <p class="experience-description">{{ entry.description }}</p>
-    </div>
+    <h1>Experience</h1>
+
+    {% for section in experienceSections %}
+    <section>
+        <h2>{{ section.sectionName }}</h2>
+        {% for entry in section.entries %}
+        <div class="experience-item">
+            <div class="experience-header">
+                <span class="company">{{ entry.company }}</span> - <span class="job-title">{{ entry.jobtitle }}</span>
+            </div>
+            <div class="experience-date">{{ entry.startDate }} - {{ entry.endDate }}</div>
+            <p class="experience-description">{{ entry.description }}</p>
+        </div>
+        {% endfor %}
+    </section>
     {% endfor %}
-  </section>
-  {% endfor %}
 </body>
+
 </html>
