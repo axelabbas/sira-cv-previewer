@@ -1,0 +1,44 @@
+.resizable-container {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+.resizable-left,
+.resizable-right {
+  height: 100%;
+  overflow: hidden;
+}
+
+.resizable-divider {
+  width: 8px;
+  height: 100%;
+  background-color: var(--divider-bg);
+  cursor: col-resize;
+  position: relative;
+  transition: background-color 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.resizable-divider:hover,
+.resizable-divider.dragging {
+  background-color: var(--primary-color);
+}
+
+.divider-handle {
+  width: 2px;
+  height: 40px;
+  background-color: var(--divider-handle);
+  border-radius: 2px;
+  opacity: 0.5;
+  transition: opacity 0.2s ease;
+}
+
+.resizable-divider:hover .divider-handle,
+.resizable-divider.dragging .divider-handle {
+  opacity: 1;
+  background-color: white;
+}

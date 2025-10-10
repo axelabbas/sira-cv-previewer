@@ -1,0 +1,16 @@
+.app {
+  width: 100vw;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background-color: var(--app-bg);
+}
+
+.main-content {
+  flex: 1;
+  padding: 16px;
+  overflow: hidden;
+  display: flex;
+}
+
