@@ -33,16 +33,16 @@ export default function ResizablePanel({
             if (!containerRef.current) return;
 
             e.preventDefault();
-            
+
             const containerRect = containerRef.current.getBoundingClientRect();
             const newLeftWidth = ((e.clientX - containerRect.left) / containerRect.width) * 100;
 
             // Clamp the value between min and max
             const clampedWidth = Math.max(
-                minWidthRef.current, 
+                minWidthRef.current,
                 Math.min(maxWidthRef.current, newLeftWidth)
             );
-            
+
             setLeftWidth(clampedWidth);
         };
 
@@ -50,7 +50,7 @@ export default function ResizablePanel({
             setIsDragging(false);
             document.body.style.cursor = '';
             document.body.style.userSelect = '';
-            
+
             document.removeEventListener('mousemove', handleMouseMove);
             document.removeEventListener('mouseup', handleMouseUp);
         };
@@ -75,9 +75,9 @@ export default function ResizablePanel({
 
     return (
         <div className="resizable-container" ref={containerRef}>
-            <div 
-                className="resizable-left" 
-                style={{ 
+            <div
+                className="resizable-left"
+                style={{
                     width: `calc(${leftWidth}% - 4px)`,
                     pointerEvents: isDragging ? 'none' : 'auto'
                 }}
@@ -92,9 +92,9 @@ export default function ResizablePanel({
                 <div className="divider-handle" />
             </div>
 
-            <div 
-                className="resizable-right" 
-                style={{ 
+            <div
+                className="resizable-right"
+                style={{
                     width: `calc(${100 - leftWidth}% - 4px)`,
                     pointerEvents: isDragging ? 'none' : 'auto'
                 }}
