@@ -48,7 +48,7 @@ export const PREVIEW_DATA = {
           startyear: '2020',
           endyear: 'Present',
           isPresent: true,
-          description: 'Led development of microservices architecture serving 2M+ users. Mentored team of 5 junior developers and improved code quality through automated testing.'
+          description: 'Led development of microservices architecture serving 2M+ users\nMentored team of 5 junior developers\nImproved code quality through automated testing\nImplemented CI/CD best practices'
         },
         {
           company: 'StartupXYZ',
@@ -56,7 +56,7 @@ export const PREVIEW_DATA = {
           startyear: '2017',
           endyear: '2019',
           isPresent: false,
-          description: 'Built customer-facing web applications using React and Node.js. Implemented CI/CD pipelines reducing deployment time by 60%.'
+          description: 'Built customer-facing web applications using React and Node.js\nImplemented CI/CD pipelines reducing deployment time by 60%\nCollaborated with design team on UX improvements'
         }
       ]
     },

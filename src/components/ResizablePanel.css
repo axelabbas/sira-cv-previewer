@@ -17,10 +17,13 @@
   background-color: var(--divider-bg);
   cursor: col-resize;
   position: relative;
+  z-index: 10;
+  flex-shrink: 0;
   transition: background-color 0.2s ease;
   display: flex;
   align-items: center;
   justify-content: center;
+  user-select: none;
 }
 
 .resizable-divider:hover,

@@ -17,11 +17,39 @@ export function injectPreviewData(html: string, previewData: Record<string, unkn
     const filterList = filters.split('|').map(f => f.trim()).filter(f => f);
     let result = value;
     
-    for (const filter of filterList) {
-      if (filter === 'length') {
-        result = Array.isArray(result) ? result.length : 0;
+    for (const filterExpr of filterList) {
+      // Handle filter with arguments like join('  |  ')
+      const filterMatch = filterExpr.match(/^(\w+)(?:\((.*?)\))?$/);
+      if (!filterMatch) continue;
+      
+      const [, filterName, filterArgs] = filterMatch;
+      
+      switch (filterName) {
+        case 'length':
+          result = Array.isArray(result) ? result.length : 0;
+          break;
+        case 'join':
+          if (Array.isArray(result)) {
+            // Extract the join separator from quotes
+            const separator = filterArgs?.replace(/^['"]|['"]$/g, '') || '';
+            result = result.join(separator);
+          }
+          break;
+        case 'upper':
+          result = String(result).toUpperCase();
+          break;
+        case 'lower':
+          result = String(result).toLowerCase();
+          break;
+        case 'title':
+          result = String(result).replace(/\w\S*/g, (txt) => txt.charAt(0).toUpperCase() + txt.substr(1).toLowerCase());
+          break;
+        case 'default':
+          if (!result || result === '' || result === null || result === undefined) {
+            result = filterArgs?.replace(/^['"]|['"]$/g, '') || '';
+          }
+          break;
       }
-      // Add more filters as needed
     }
     
     return result;
@@ -43,6 +71,23 @@ export function injectPreviewData(html: string, previewData: Record<string, unkn
       const parts = trimmed.split(' or ').map(p => p.trim());
       const results = parts.map(part => evaluateCondition(part, context));
       return results.some(r => r);
+    }
+    
+    // Handle 'in' operator (e.g., "\\n" in entry.description or "\n" in entry.description)
+    const inMatch = trimmed.match(/^["'](.+?)["']\s+in\s+(.+)$/);
+    if (inMatch) {
+      const [, searchStr, varPath] = inMatch;
+      const value = getNestedValue(context, varPath.trim());
+      if (typeof value === 'string') {
+        // Unescape the search string - handle both \\n and \n
+        const unescapedSearch = searchStr
+          .replace(/\\\\n/g, '\n')  // Handle \\n (double backslash)
+          .replace(/\\n/g, '\n')     // Handle \n (single backslash)
+          .replace(/\\\\t/g, '\t')   // Handle \\t
+          .replace(/\\t/g, '\t');    // Handle \t
+        return value.includes(unescapedSearch);
+      }
+      return false;
     }
     
     // Handle filters like "array|length > 0"
@@ -77,6 +122,32 @@ export function injectPreviewData(html: string, previewData: Record<string, unkn
     if (trimmed.startsWith('not ')) {
       const innerCondition = trimmed.substring(4).trim();
       return !evaluateCondition(innerCondition, context);
+    }
+    
+    // Handle method calls in conditions like line.strip()
+    const methodMatch = trimmed.match(/^(.+?)\.(\w+)\(\)$/);
+    if (methodMatch) {
+      const [, varPath, methodName] = methodMatch;
+      let value = getNestedValue(context, varPath.trim());
+      
+      // Apply string methods
+      if (typeof value === 'string') {
+        if (methodName === 'strip') {
+          value = value.trim();
+        } else if (methodName === 'upper') {
+          value = value.toUpperCase();
+        } else if (methodName === 'lower') {
+          value = value.toLowerCase();
+        }
+      }
+      
+      // Check truthiness of the result
+      if (value === undefined || value === null) return false;
+      if (typeof value === 'boolean') return value;
+      if (typeof value === 'string') return value.length > 0;
+      if (typeof value === 'number') return value !== 0;
+      if (Array.isArray(value)) return value.length > 0;
+      return !!value;
     }
     
     // Simple variable check
@@ -119,29 +190,34 @@ export function injectPreviewData(html: string, previewData: Record<string, unkn
   };
 
   // Find matching endif for a given if position
-  const findMatchingEndif = (template: string, startPos: number): { endifPos: number; elifPositions: number[] } => {
+  const findMatchingEndif = (template: string, startPos: number): { endifPos: number; elifPositions: number[]; elsePos: number } => {
     let depth = 1;
     let pos = startPos;
     const elifPositions: number[] = [];
+    let elsePos = -1;
     const ifRegex = /{%\s*if\s+/g;
     const elifRegex = /{%\s*elif\s+/g;
+    const elseRegex = /{%\s*else\s*%}/g;
     const endifRegex = /{%\s*endif\s*%}/g;
     
     while (depth > 0 && pos < template.length) {
       ifRegex.lastIndex = pos;
       elifRegex.lastIndex = pos;
+      elseRegex.lastIndex = pos;
       endifRegex.lastIndex = pos;
       
       const nextIf = ifRegex.exec(template);
       const nextElif = elifRegex.exec(template);
+      const nextElse = elseRegex.exec(template);
       const nextEndif = endifRegex.exec(template);
       
-      if (!nextEndif) return { endifPos: -1, elifPositions };
+      if (!nextEndif) return { endifPos: -1, elifPositions, elsePos };
       
       // Find the closest match
       const candidates = [
         nextIf ? { type: 'if', pos: nextIf.index } : null,
         nextElif && depth === 1 ? { type: 'elif', pos: nextElif.index } : null,
+        nextElse && depth === 1 ? { type: 'else', pos: nextElse.index } : null,
         { type: 'endif', pos: nextEndif.index }
       ].filter(c => c !== null) as Array<{ type: string; pos: number }>;
       
@@ -154,20 +230,75 @@ export function injectPreviewData(html: string, previewData: Record<string, unkn
       } else if (next.type === 'elif') {
         elifPositions.push(next.pos);
         pos = next.pos + 1;
+      } else if (next.type === 'else') {
+        elsePos = next.pos;
+        pos = next.pos + 1;
       } else {
         depth--;
-        if (depth === 0) return { endifPos: nextEndif.index, elifPositions };
+        if (depth === 0) return { endifPos: nextEndif.index, elifPositions, elsePos };
         pos = nextEndif.index + 1;
       }
     }
     
-    return { endifPos: -1, elifPositions };
+    return { endifPos: -1, elifPositions, elsePos };
   };
 
   // Recursive function to process template with given data context
   const processTemplate = (template: string, context: Record<string, unknown>): string => {
     let result = template;
     let changed = true;
+
+    // Remove Jinja comments {# ... #} first
+    result = result.replace(/{#[\s\S]*?#}/g, '');
+
+    // Process {% set %} statements first (variable assignments)
+    result = result.replace(/{%\s*set\s+(\w+)\s*=\s*\[\s*\]\s*%}/g, (_match, varName) => {
+      context[varName] = [];
+      return ''; // Remove the set statement
+    });
+
+    result = result.replace(/{%\s*set\s+(\w+)\s*=\s*(.+?)\s*%}/g, (_match, varName, value) => {
+      // Simple value assignment (not arrays)
+      const trimmedValue = value.trim();
+      if (trimmedValue.startsWith('"') || trimmedValue.startsWith("'")) {
+        context[varName] = trimmedValue.slice(1, -1);
+      } else {
+        const resolved = getNestedValue(context, trimmedValue);
+        context[varName] = resolved;
+      }
+      return ''; // Remove the set statement
+    });
+
+    // Process {% do %} statements (array operations, etc.)
+    result = result.replace(/{%\s*do\s+(.+?)\s*%}/g, (_match, expression) => {
+      // Handle array.append(value) operations
+      const appendMatch = expression.match(/(\w+)\.append\((.+?)\)/);
+      if (appendMatch) {
+        const [, arrayName, valueExpr] = appendMatch;
+        const array = context[arrayName];
+        
+        if (Array.isArray(array)) {
+          // Evaluate the value expression
+          const trimmedValue = valueExpr.trim();
+          let valueToAppend: unknown;
+          
+          if (trimmedValue.startsWith('"') || trimmedValue.startsWith("'")) {
+            // String literal
+            valueToAppend = trimmedValue.slice(1, -1);
+          } else {
+            // Variable reference
+            valueToAppend = getNestedValue(context, trimmedValue);
+          }
+          
+          // Only append if value exists
+          if (valueToAppend !== undefined && valueToAppend !== null && valueToAppend !== '') {
+            array.push(valueToAppend);
+          }
+        }
+      }
+      
+      return ''; // Remove the do statement
+    });
     
     // Process FOR loops
     while (changed) {
@@ -184,6 +315,25 @@ export function injectPreviewData(html: string, previewData: Record<string, unkn
         // Remove filters from array path for lookup
         arrayPath = arrayPath.split('|')[0].trim();
         
+        // Check if arrayPath includes a method call like .split()
+        let arrayData: unknown;
+        const methodMatch = arrayPath.match(/^(.+?)\.(\w+)\((.*?)\)$/);
+        if (methodMatch) {
+          const [, varPath, methodName, args] = methodMatch;
+          const value = getNestedValue(context, varPath.trim());
+          
+          // Handle string methods
+          if (typeof value === 'string') {
+            if (methodName === 'split') {
+              // Extract the delimiter from quotes
+              const delimiter = args.replace(/^['"]|['"]$/g, '').replace(/\\n/g, '\n').replace(/\\t/g, '\t');
+              arrayData = value.split(delimiter);
+            }
+          }
+        } else {
+          arrayData = getNestedValue(context, arrayPath);
+        }
+        
         const endforPos = findMatchingEndfor(result, contentStart);
         if (endforPos !== -1) {
           const content = result.substring(contentStart, endforPos);
@@ -191,7 +341,6 @@ export function injectPreviewData(html: string, previewData: Record<string, unkn
           const endTagMatch = result.substring(endforPos).match(endTag);
           const endTagLength = endTagMatch ? endTagMatch[0].length : 0;
           
-          const arrayData = getNestedValue(context, arrayPath);
           let replacement = '';
           
           if (Array.isArray(arrayData) && arrayData.length > 0) {
@@ -222,9 +371,53 @@ export function injectPreviewData(html: string, previewData: Record<string, unkn
       }
     }
 
-    // Replace variables {{ variable }}
+    // Replace variables {{ variable }} with filter support
     result = result.replace(/{{\s*([^}]+?)\s*}}/g, (match, variable) => {
       const trimmed = variable.trim();
+      
+      // Check for method calls like line.strip()
+      const methodMatch = trimmed.match(/^(.+?)\.(\w+)\(\)$/);
+      if (methodMatch) {
+        const [, varPath, methodName] = methodMatch;
+        let value = getNestedValue(context, varPath.trim());
+        
+        // Apply string methods
+        if (typeof value === 'string') {
+          if (methodName === 'strip') {
+            value = value.trim();
+          } else if (methodName === 'upper') {
+            value = value.toUpperCase();
+          } else if (methodName === 'lower') {
+            value = value.toLowerCase();
+          }
+        }
+        
+        if (value !== undefined && value !== null) {
+          return String(value);
+        }
+        return match;
+      }
+      
+      // Check if there are filters applied
+      if (trimmed.includes('|')) {
+        const parts = trimmed.split('|');
+        const varPath = parts[0].trim();
+        const filters = parts.slice(1).join('|').trim();
+        
+        let value = getNestedValue(context, varPath);
+        
+        // Apply all filters
+        if (filters) {
+          value = applyFilters(value, filters);
+        }
+        
+        if (value !== undefined && value !== null) {
+          return String(value);
+        }
+        return match;
+      }
+      
+      // No filters, just get the value
       const value = getNestedValue(context, trimmed);
       if (value !== undefined && value !== null) {
         if (Array.isArray(value)) {
@@ -246,7 +439,7 @@ export function injectPreviewData(html: string, previewData: Record<string, unkn
         const startTag = ifMatch[0];
         const contentStart = startPos + startTag.length;
         
-        const { endifPos, elifPositions } = findMatchingEndif(result, contentStart);
+        const { endifPos, elifPositions, elsePos } = findMatchingEndif(result, contentStart);
         if (endifPos !== -1) {
           const endTag = /{%\s*endif\s*%}/;
           const endTagMatch = result.substring(endifPos).match(endTag);
@@ -255,26 +448,53 @@ export function injectPreviewData(html: string, previewData: Record<string, unkn
           let replacement = '';
           
           // Check main if condition
-          if (evaluateCondition(condition, context)) {
-            const contentEnd = elifPositions.length > 0 ? elifPositions[0] : endifPos;
+          const conditionResult = evaluateCondition(condition, context);
+          
+          if (conditionResult) {
+            // Determine where the if content ends (before elif, else, or endif)
+            let contentEnd = endifPos;
+            if (elifPositions.length > 0) {
+              contentEnd = elifPositions[0];
+            } else if (elsePos !== -1) {
+              contentEnd = elsePos;
+            }
             const content = result.substring(contentStart, contentEnd);
             replacement = processTemplate(content, context);
           } else {
             // Check elif conditions
+            let elifMatched = false;
             for (let i = 0; i < elifPositions.length; i++) {
               const elifPos = elifPositions[i];
               const elifMatch = result.substring(elifPos).match(/{%\s*elif\s+([^%]+?)\s*%}/);
               if (elifMatch) {
                 const elifCondition = elifMatch[1];
                 const elifContentStart = elifPos + elifMatch[0].length;
-                const elifContentEnd = i < elifPositions.length - 1 ? elifPositions[i + 1] : endifPos;
+                
+                // Determine where this elif content ends
+                let elifContentEnd = endifPos;
+                if (i < elifPositions.length - 1) {
+                  elifContentEnd = elifPositions[i + 1];
+                } else if (elsePos !== -1) {
+                  elifContentEnd = elsePos;
+                }
                 
                 if (evaluateCondition(elifCondition, context)) {
                   const content = result.substring(elifContentStart, elifContentEnd);
                   replacement = processTemplate(content, context);
+                  elifMatched = true;
                   break;
                 }
               }
+            }
+            
+            // If no elif matched and there's an else block, use it
+            if (!elifMatched && elsePos !== -1) {
+              const elseTag = /{%\s*else\s*%}/;
+              const elseTagMatch = result.substring(elsePos).match(elseTag);
+              const elseTagLength = elseTagMatch ? elseTagMatch[0].length : 0;
+              const elseContentStart = elsePos + elseTagLength;
+              const content = result.substring(elseContentStart, endifPos);
+              replacement = processTemplate(content, context);
             }
           }
           
