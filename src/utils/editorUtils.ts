@@ -4,12 +4,55 @@
 export function injectPreviewData(html: string, previewData: Record<string, unknown>): string {
   // Helper function to get nested property value
   const getNestedValue = (obj: Record<string, unknown>, path: string): unknown => {
-    return path.split('.').reduce((current: unknown, key: string) => {
-      if (current && typeof current === 'object' && key in current) {
-        return (current as Record<string, unknown>)[key];
+    // Tokenize the path into dot parts and bracket selectors
+    // Supports: a.b, a[0], a[2:], a[:3], a[1:4], a[idx]
+    const tokens: Array<{ type: 'prop' | 'bracket'; value: string }> = [];
+    const regex = /(\w+)|(\[(.*?)\])/g;
+    let match: RegExpExecArray | null;
+    while ((match = regex.exec(path)) !== null) {
+      if (match[1]) {
+        tokens.push({ type: 'prop', value: match[1] });
+      } else if (match[3] !== undefined) {
+        tokens.push({ type: 'bracket', value: match[3].trim() });
       }
-      return undefined;
-    }, obj);
+    }
+
+    let current: unknown = obj;
+    for (const token of tokens) {
+      if (token.type === 'prop') {
+        if (current && typeof current === 'object' && token.value in (current as Record<string, unknown>)) {
+          current = (current as Record<string, unknown>)[token.value];
+        } else {
+          return undefined;
+        }
+      } else {
+        // bracket token
+        const selector = token.value;
+        if (selector.includes(':')) {
+          // Slice
+          if (!Array.isArray(current)) return undefined;
+          const [startStr, endStr] = selector.split(':').map(s => s.trim());
+          const start = startStr === '' ? 0 : isNaN(Number(startStr)) ? Number(getNestedValue(obj, startStr) as number) : Number(startStr);
+          const end = endStr === '' ? (current as unknown[]).length : isNaN(Number(endStr)) ? Number(getNestedValue(obj, endStr) as number) : Number(endStr);
+          current = (current as unknown[]).slice(isNaN(start) ? 0 : start, isNaN(end) ? (current as unknown[]).length : end);
+        } else {
+          // Index
+          if (!Array.isArray(current)) return undefined;
+          const idxStr = selector;
+          let idx: number;
+          if (/^-?\d+$/.test(idxStr)) {
+            idx = parseInt(idxStr, 10);
+          } else {
+            const v = getNestedValue(obj, idxStr);
+            idx = typeof v === 'number' ? v : parseInt(String(v ?? NaN), 10);
+          }
+          const arr = current as unknown[];
+          if (idx < 0) idx = arr.length + idx; // support negative index
+          current = arr[idx];
+        }
+      }
+    }
+    return current;
   };
 
   // Helper to evaluate Jinja filters
@@ -58,6 +101,44 @@ export function injectPreviewData(html: string, previewData: Record<string, unkn
   // Helper to evaluate a condition
   const evaluateCondition = (condition: string, context: Record<string, unknown>): boolean => {
     const trimmed = condition.trim();
+
+    // Helper to evaluate an operand which might be a variable, filtered value, method call, string or number
+    const evalOperand = (expr: string): unknown => {
+      const e = expr.trim();
+      // Quoted string
+      if ((e.startsWith('"') && e.endsWith('"')) || (e.startsWith("'") && e.endsWith("'"))) {
+        const inner = e.slice(1, -1)
+          .replace(/\\n/g, '\n')
+          .replace(/\\t/g, '\t');
+        return inner;
+      }
+      // Boolean
+      if (e === 'true') return true;
+      if (e === 'false') return false;
+      // Number
+      if (/^-?\d+(?:\.\d+)?$/.test(e)) return Number(e);
+      // Method calls like var.strip()
+      const methodMatch = e.match(/^(.+?)\.(\w+)\(\)$/);
+      if (methodMatch) {
+        const [, varPath, methodName] = methodMatch;
+        let value = getNestedValue(context, varPath.trim()) as unknown;
+        if (typeof value === 'string') {
+          if (methodName === 'strip') value = value.trim();
+          else if (methodName === 'upper') value = value.toUpperCase();
+          else if (methodName === 'lower') value = value.toLowerCase();
+        }
+        return value;
+      }
+      // Filters like var|length
+      if (e.includes('|')) {
+        const [varPath, ...filterParts] = e.split('|');
+        const filters = filterParts.join('|');
+        const base = getNestedValue(context, varPath.trim());
+        return applyFilters(base, filters.trim());
+      }
+      // Default: nested value resolution (with indexing support)
+      return getNestedValue(context, e);
+    };
     
     // Handle logical AND operator
     if (trimmed.includes(' and ')) {
@@ -89,8 +170,53 @@ export function injectPreviewData(html: string, previewData: Record<string, unkn
       }
       return false;
     }
+
+    // Generic comparisons like a <= 2, items|length > 0, loop.index == 1
+    const compMatchGeneric = trimmed.match(/^(.+?)\s*(==|!=|>=|<=|>|<)\s*(.+)$/);
+    if (compMatchGeneric) {
+      const [, leftExpr, operator, rightExpr] = compMatchGeneric;
+      const leftVal = evalOperand(leftExpr);
+      const rightVal = evalOperand(rightExpr);
+
+      const toNumberIfPossible = (v: unknown): unknown => {
+        if (typeof v === 'number') return v;
+        if (typeof v === 'string' && /^-?\d+(?:\.\d+)?$/.test(v)) return Number(v);
+        return v;
+      };
+
+      const l = toNumberIfPossible(leftVal);
+      const r = toNumberIfPossible(rightVal);
+
+      const eqLoose = (a: unknown, b: unknown) => {
+        // Implement loose equality similar to JS, but without using 'any'
+        if (typeof a === 'number' && typeof b === 'string' && /^-?\d+(?:\.\d+)?$/.test(b)) return a === Number(b);
+        if (typeof b === 'number' && typeof a === 'string' && /^-?\d+(?:\.\d+)?$/.test(a)) return Number(a) === b;
+        return a === b; // fall back to strict equality
+      };
+
+      const cmp = (a: unknown, b: unknown, op: string): boolean => {
+        if (op === '==' ) return eqLoose(a, b);
+        if (op === '!=' ) return !eqLoose(a, b);
+        // For relational ops, only compare numbers or strings
+        if (typeof a === 'number' && typeof b === 'number') {
+          if (op === '>') return a > b;
+          if (op === '<') return a < b;
+          if (op === '>=') return a >= b;
+          if (op === '<=') return a <= b;
+        }
+        if (typeof a === 'string' && typeof b === 'string') {
+          if (op === '>') return a > b;
+          if (op === '<') return a < b;
+          if (op === '>=') return a >= b;
+          if (op === '<=') return a <= b;
+        }
+        return false;
+      };
+
+      return cmp(l, r, operator);
+    }
     
-    // Handle filters like "array|length > 0"
+    // Handle filters like "array|length > 0" (legacy path, generic comparator above should handle most cases)
     const filterMatch = trimmed.match(/^(.+?)\|(.+?)$/);
     if (filterMatch) {
       const [, varPath, filters] = filterMatch;
@@ -344,14 +470,28 @@ export function injectPreviewData(html: string, previewData: Record<string, unkn
           let replacement = '';
           
           if (Array.isArray(arrayData) && arrayData.length > 0) {
-            replacement = arrayData.map((item) => {
+            const length = arrayData.length;
+            replacement = arrayData.map((item, idx) => {
+              const loop = {
+                index: idx + 1,
+                index0: idx,
+                first: idx === 0,
+                last: idx === length - 1,
+                length,
+                revindex: length - idx,
+                revindex0: length - idx - 1,
+              };
+
               const itemContext = {
                 ...context,
-                [itemName]: item
-              };
-              
+                [itemName]: item,
+                loop,
+              } as Record<string, unknown>;
+
+              // Process inner content with extended context
               let itemContent = processTemplate(content, itemContext);
-              
+
+              // Fallback replacements for direct {{ item.prop }} and {{ item }}
               itemContent = itemContent.replace(new RegExp(`{{\\s*${itemName}\\.([^}]+?)\\s*}}`, 'g'), (m: string, prop: string) => {
                 if (item && typeof item === 'object' && prop in item) {
                   return String((item as Record<string, unknown>)[prop]);
